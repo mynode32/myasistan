@@ -1,0 +1,92 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum StoreStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ProductStatus {
+  ACTIVE
+  DRAFT
+  ARCHIVED
+}
+
+model Store {
+  id        String      @id @default(cuid())
+  name      String
+  platform  String      @default("ikas")
+  domain    String?
+  language  String      @default("tr")
+  currency  String      @default("TRY")
+  timezone  String      @default("Europe/Istanbul")
+  status    StoreStatus @default(ACTIVE)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  users    User[]
+  products Product[]
+
+  @@map("stores")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  storeId      String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  store Store @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  @@index([storeId])
+  @@map("users")
+}
+
+model Product {
+  id          String        @id @default(cuid())
+  storeId     String
+  externalId  String?
+  title       String
+  description String?
+  categoryId  String?
+  brand       String?
+  url         String?
+  imageUrl    String?
+  status      ProductStatus @default(ACTIVE)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  store    Store            @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  variants ProductVariant[]
+
+  @@index([storeId])
+  @@map("products")
+}
+
+model ProductVariant {
+  id                String   @id @default(cuid())
+  productId         String
+  externalVariantId String?
+  sku               String?
+  title             String?
+  price             Decimal  @db.Decimal(10, 2)
+  compareAtPrice    Decimal? @db.Decimal(10, 2)
+  currency          String   @default("TRY")
+  stockQuantity     Int      @default(0)
+  attributesJson    Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@map("product_variants")
+}
