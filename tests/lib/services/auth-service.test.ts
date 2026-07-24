@@ -36,6 +36,7 @@ describe("registerStoreWithOwner", () => {
     expect(result.store).toEqual(fakeStore);
     expect(result.user).toEqual(fakeUser);
     expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
+    expect(prismaMock.$transaction.mock.calls[0][1]).toEqual({ maxWait: 10000, timeout: 10000 });
   });
 });
 
