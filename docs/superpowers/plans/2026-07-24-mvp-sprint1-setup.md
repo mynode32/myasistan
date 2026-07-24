@@ -21,7 +21,8 @@
 - UI copy in Turkish, code identifiers (variables/functions/types) in English, commit messages in English (user preference).
 - Package manager: npm.
 - Installed Next.js version is **16.2.11** (confirmed in Task 1) — newer than a typical model's training data, with breaking changes vs. Next.js 14. `cookies()` from `next/headers` is **async** (`const cookieStore = await cookies()`), and dynamic route `params` in Route Handlers are **`Promise`-wrapped** (`{ params }: { params: Promise<{ id: string }> }`, then `const { id } = await params;`). `NextRequest.cookies` (used in `middleware.ts`) is unaffected and stays synchronous. All code blocks in this plan already reflect this — do not "correct" them back to the Next 14 synchronous style. Before writing any other Next.js-specific code not covered by this plan, check `node_modules/next/dist/docs/` for the current API shape rather than relying on training data.
-- Prisma is version 7.9.0. `PrismaClient` and all model types (`Store`, `User`, `Product`, `ProductVariant`) import from `@/generated/prisma/client` (there is no `index.ts` at `@/generated/prisma` — importing the bare directory fails), never `"@prisma/client"` (see Task 2 for why). `PrismaClient` requires a driver `adapter` in its constructor — see Task 3. **Not yet verified:** whether `vitest-mock-extended`'s `mockDeep<PrismaClient>()` (used throughout Tasks 6–9's tests) works cleanly against Prisma 7's generated client shape — this project's Prisma version postdates this plan's authoring. The Task 6 implementer should treat the first `mockDeep<PrismaClient>()` test as a spike: if it doesn't type-check or mock correctly, stop and report NEEDS_CONTEXT rather than improvising a workaround, since the same pattern repeats in Tasks 7–9.
+- Prisma is version 7.9.0. `PrismaClient` and all model types (`Store`, `User`, `Product`, `ProductVariant`) import from `@/generated/prisma/client` (there is no `index.ts` at `@/generated/prisma` — importing the bare directory fails), never `"@prisma/client"` (see Task 2 for why). `PrismaClient` requires a driver `adapter` in its constructor — see Task 3. `vitest-mock-extended`'s `mockDeep<PrismaClient>()` (used throughout Tasks 6–9's tests) is **confirmed working** against Prisma 7's generated client shape — verified in Task 6, no adjustment needed, safe to keep using in Tasks 7–9 exactly as shown.
+- **`prisma.$transaction(async (tx) => ...)` (interactive transactions) can intermittently fail with `P2028: Unable to start a transaction in the given time`** against Supabase's pgbouncer pool (`DATABASE_URL`, transaction-pooling mode) — discovered in Task 6 (`registerStoreWithOwner`), roughly 1-in-2 failure rate under rapid repeated calls before the fix. Fix: pass explicit options as the transaction's second argument, `{ maxWait: 10000, timeout: 10000 }` (defaults are 2000ms/5000ms, too tight for this connection path) — confirmed reliable with a 5-attempt real-database load test after raising them. Any future interactive `$transaction` call (Tasks 7–9 don't currently have one, but a later feature might) should use the same options. Route handlers wrapping a `$transaction` call must also not swallow every error into one generic message (see Task 6's register route) — narrow `catch` blocks to the specific Prisma error code they're meant to handle (e.g. `Prisma.PrismaClientKnownRequestError` with `code === "P2002"` for a real uniqueness conflict), or a transient infra timeout gets misreported as a business-logic error.
 - Supabase connection strings need **different** SSL handling depending on who's connecting (see Task 3): `DATABASE_URL` (pooled, port 6543, used by the app via `@prisma/adapter-pg`/node-postgres) must NOT have `sslmode=require` in the URL — node-postgres's connection-string parser treats it as full certificate-chain verification and fails (`self-signed certificate in certificate chain`) against Supabase's cert; TLS is instead enabled explicitly in code via `ssl: { rejectUnauthorized: false }` passed alongside `connectionString`. `DIRECT_URL` (direct, port 5432, used only by the Prisma CLI's Rust migration engine) DOES need `sslmode=require` in the URL, or `prisma migrate` fails with a generic P1001. Don't "fix" one to match the other — they're different SSL stacks with different requirements.
 - Turbopack (this Next.js version's default bundler) panics on paths containing multi-byte Turkish characters — this project's path has them (`Masaüstü`, `Aİ ASİSTAN YENİ`). `npm run dev` / `npm run build` already force `--webpack` (set in Task 1) — keep using the npm scripts as-is; don't invoke `next dev`/`next build` directly without `--webpack`.
 
@@ -703,15 +704,24 @@ export async function registerStoreWithOwner(
 ): Promise<{ store: Store; user: User }> {
   const passwordHash = await hashPassword(input.password);
 
-  return prisma.$transaction(async (tx) => {
-    const store = await tx.store.create({
-      data: { name: input.storeName },
-    });
-    const user = await tx.user.create({
-      data: { storeId: store.id, email: input.email, passwordHash },
-    });
-    return { store, user };
-  });
+  return prisma.$transaction(
+    async (tx) => {
+      const store = await tx.store.create({
+        data: { name: input.storeName },
+      });
+      const user = await tx.user.create({
+        data: { storeId: store.id, email: input.email, passwordHash },
+      });
+      return { store, user };
+    },
+    // Supabase's pgbouncer pool (transaction mode, port 6543) plus network
+    // latency can exceed Prisma's 2s/5s defaults for acquiring a
+    // transaction-pinned connection, intermittently throwing P2028
+    // ("Unable to start a transaction in the given time") - confirmed via
+    // a 5-attempt real-DB load test after raising these. Raised both well
+    // above observed latency.
+    { maxWait: 10000, timeout: 10000 },
+  );
 }
 
 export async function loginWithCredentials(
@@ -748,6 +758,7 @@ Create `src/app/api/auth/register/route.ts`:
 
 ```typescript
 import { NextResponse } from "next/server";
+import { Prisma } from "@/generated/prisma/client";
 import { registerSchema } from "@/lib/validation/auth";
 import { registerStoreWithOwner } from "@/lib/services/auth-service";
 import { signSessionToken } from "@/lib/auth/jwt";
@@ -775,10 +786,15 @@ export async function POST(request: Request) {
     });
     return response;
   } catch (error) {
-    return NextResponse.json({ error: "Bu e-posta ile bir hesap zaten var." }, { status: 409 });
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return NextResponse.json({ error: "Bu e-posta ile bir hesap zaten var." }, { status: 409 });
+    }
+    return NextResponse.json({ error: "Kayıt oluşturulamadı, lütfen tekrar deneyin." }, { status: 500 });
   }
 }
 ```
+
+The original catch-all (any error → 409 "email already exists") was replaced after discovering it masked a real, recurring problem: intermittent `P2028` transaction-timeout errors (see the `$transaction` options above) were being reported to the user as "this email is taken," which is both wrong and actively misleading during debugging. Narrowing to Prisma's `P2002` unique-constraint code fixes both the misdiagnosis and the user-facing message accuracy.
 
 Create `src/app/api/auth/login/route.ts`:
 
