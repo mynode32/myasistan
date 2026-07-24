@@ -14,7 +14,7 @@
 - `add_to_cart` / sepete ekleme is explicitly MVP+ / out of scope for Sprint 1 (PRD §9.1).
 - Every service function and API route that touches store data must take/scope by `storeId` — no cross-tenant leaks (PRD §25.4 "Her API'de store_id kontrolu").
 - Backend: Next.js API routes, not a separate NestJS service (PRD §18.2).
-- Database: PostgreSQL via Prisma ORM (PRD §18.2, §16.1).
+- Database: PostgreSQL via Prisma ORM (PRD §18.2, §16.1). Decided during execution: hosted on **Supabase**, accessed via two env vars — `DATABASE_URL` (pooled, port 6543, `pgbouncer=true`, used by the Prisma client at runtime) and `DIRECT_URL` (direct, port 5432, used only by `prisma migrate`). See Task 2.
 - Auth: custom JWT, httpOnly session cookie (PRD §18.2 lists this as an accepted option).
 - TypeScript strict mode; no `any` (user preference — type safety matters).
 - Secrets (`DATABASE_URL`, `JWT_SECRET`) live in `.env.local`, never committed; `.env.example` documents required keys.
@@ -151,24 +151,38 @@ git commit -m "chore: scaffold Next.js project with TypeScript and Tailwind"
 
 **Files:**
 - Create: `prisma/schema.prisma`
-- Modify: `.env.example` (already has `DATABASE_URL`, no change needed)
+- Modify: `.env.example` (add `DIRECT_URL` alongside `DATABASE_URL` — see Step 1)
 - Modify: `package.json` (add `prisma`, `@prisma/client` deps)
 
 **Interfaces:**
 - Produces: Prisma models `Store`, `User`, `Product`, `ProductVariant` and generated `@prisma/client` types (`Store`, `User`, `Product`, `ProductVariant`) that every later service imports.
 
-- [ ] **Step 1: Install Prisma**
+Database is Supabase Postgres (decided during execution, not a local instance). Supabase's connection page gives two URLs: a pooled one (port 6543, `pgbouncer=true`) for the app at runtime, and a direct one (port 5432) for running migrations — PgBouncer's transaction-mode pooling does not support the prepared statements Prisma Migrate needs. Both are required.
+
+- [ ] **Step 1: Install Prisma and set up both connection strings**
 
 ```bash
 npm install prisma @prisma/client
 npx prisma init --datasource-provider postgresql
 ```
 
-This creates `prisma/schema.prisma` and a `.env` — delete the generated `.env` (we use `.env.local`, not `.env`, per Next.js convention) and instead create `.env.local` with real values copied from `.env.example` (use a local Postgres connection string you have available).
+This creates `prisma/schema.prisma` and a `.env` — delete the generated `.env` (we use `.env.local`, not `.env`, per Next.js convention).
+
+Update `.env.example` to document both URLs (replace the single `DATABASE_URL` line from Task 1):
+
+```bash
+# Pooled connection (pgbouncer, port 6543) — used by the app at runtime.
+DATABASE_URL="postgresql://postgres.[project-ref]:[YOUR-PASSWORD]@[pooler-host]:6543/postgres?pgbouncer=true"
+# Direct connection (port 5432) — used only for running migrations.
+DIRECT_URL="postgresql://postgres.[project-ref]:[YOUR-PASSWORD]@[pooler-host]:5432/postgres"
+JWT_SECRET="replace-with-a-long-random-string"
+```
+
+In `.env.local`, set both to the real values from the Supabase dashboard (Connect → ORMs → Prisma), with the real database password substituted for `[YOUR-PASSWORD]`.
 
 - [ ] **Step 2: Write the schema**
 
-Replace the contents of `prisma/schema.prisma`:
+Replace the contents of `prisma/schema.prisma`. Note the `directUrl` line — this is what makes `prisma migrate` use the non-pooled connection while the generated client still uses the pooled one:
 
 ```prisma
 generator client {
@@ -176,8 +190,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 enum StoreStatus {
@@ -267,7 +282,7 @@ model ProductVariant {
 
 - [ ] **Step 3: Run the first migration**
 
-Ensure `DATABASE_URL` in `.env.local` points at a real (local) Postgres instance, then run:
+Ensure `DATABASE_URL` and `DIRECT_URL` in `.env.local` both point at the real Supabase instance (see Step 1), then run:
 
 ```bash
 npx prisma migrate dev --name init
