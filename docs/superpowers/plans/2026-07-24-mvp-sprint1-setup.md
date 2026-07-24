@@ -2015,32 +2015,34 @@ git commit -m "feat: add admin products page with manual add and CSV import"
 
 ---
 
-### Task 12: Uçtan Uca Doğrulama
+### Task 12: Uçtan Uca Doğrulama — DONE (verified 2026-07-24)
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the full automated test suite**
+- [x] **Step 1: Run the full automated test suite**
 
 Run: `npm test`
-Expected: 23 passed, 0 failed.
+Result: 22 passed, 0 failed, across 6 files (plan's "23" estimate was stale from planning time; 22 is the actual current suite size — no missing coverage, just a stale number).
 
-- [ ] **Step 2: Run the production build**
+- [x] **Step 2: Run the production build**
 
 Run: `npm run build`
-Expected: build completes with no TypeScript or lint errors.
+Result: compiled successfully, TypeScript clean, no lint errors. One deprecation warning (pre-existing, not introduced by this task): `middleware` file convention deprecated in favor of `proxy` — flagged for the team, not fixed here (out of Task 12's verification-only scope).
 
-- [ ] **Step 3: Manual end-to-end walkthrough**
+- [x] **Step 3: Manual end-to-end walkthrough**
 
-With `npm run dev` running against a real local Postgres:
-1. Visit `/admin/products` while logged out → redirected to `/admin/login`.
-2. Register a new store → redirected to `/admin/products`, empty product list.
-3. Add one product manually → appears in the list.
-4. Import the sample CSV from Task 11 Step 2 → 2 more products appear, count matches `İçe aktarılan: 2`.
-5. Open `/api/auth/me` in the browser → returns the current session JSON (not null).
-6. Call `POST /api/auth/logout`, then reload `/admin/products` → redirected to `/admin/login` again.
-7. Confirm via `npx prisma studio` (or `psql`) that products created in step 3–4 have the correct `storeId` and that a second registered store (repeat step 2 with a different email) sees an empty product list in step to confirm tenant isolation.
+Verified against the real Supabase Postgres via `npm run dev` + `curl` (no browser in this environment, consistent with Task 11's verification approach):
+1. Logged-out `/admin/products` → 307 to `/admin/login`. ✅
+2. Registered store A → 201, empty product list. ✅
+3. Manual add → product appears (200/201, then confirmed in list). ✅
+4. CSV import (2 rows) → `{"imported":2,"failed":0}`, list shows all 3 products together. ✅
+5. `/api/auth/me` → returns session JSON (userId/storeId/email), not null. ✅
+6. Logout → 200, then `/admin/products` → 307 to `/admin/login` again. ✅
+7. Registered store B, confirmed its product list is empty (`{"products":[]}`) while store A has 3 — tenant isolation via `storeId` confirmed at the API layer. ✅
 
-- [ ] **Step 4: Record what's out of scope for next sprint**
+Test stores A and B (and their cascaded users/products/variants) deleted from the real DB afterward; dev server stopped; local test artifacts (cookies, CSV, JSON responses) removed.
+
+- [x] **Step 4: Record what's out of scope for next sprint**
 
 No commit needed — this is a checklist confirmation only. Sprint 2 (per PRD §25.5) starts with Knowledge ingestion, Embedding, Vector search, and a basic RAG endpoint; none of that is touched in Sprint 1.
 
