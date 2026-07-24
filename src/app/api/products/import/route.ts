@@ -4,6 +4,8 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { verifySessionToken } from "@/lib/auth/jwt";
 import { importProductsFromCsv } from "@/lib/services/csv-import-service";
 
+const MAX_CSV_FILE_SIZE_BYTES = 2 * 1024 * 1024; // 2MB
+
 export async function POST(request: Request) {
   const cookieStore = await cookies();
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
@@ -16,6 +18,13 @@ export async function POST(request: Request) {
   const file = formData.get("file");
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "CSV dosyası bulunamadı." }, { status: 400 });
+  }
+
+  if (file.size > MAX_CSV_FILE_SIZE_BYTES) {
+    return NextResponse.json(
+      { error: "CSV dosyası çok büyük. Maksimum dosya boyutu 2MB." },
+      { status: 400 },
+    );
   }
 
   const csvText = await file.text();

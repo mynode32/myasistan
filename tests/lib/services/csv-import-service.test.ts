@@ -55,4 +55,22 @@ describe("importProductsFromCsv", () => {
     expect(result.failed).toBe(1);
     expect(result.errors).toHaveLength(1);
   });
+
+  it("rejects the whole import without processing any rows when the row count exceeds the limit", async () => {
+    const createProductSpy = vi
+      .spyOn(productService, "createProduct")
+      .mockResolvedValue({ id: "product_1" } as any);
+
+    const header = "title,price\n";
+    const row = "Koltuk,199.00\n";
+    const csv = header + row.repeat(1001);
+
+    const result = await importProductsFromCsv("store_1", csv);
+
+    expect(createProductSpy).not.toHaveBeenCalled();
+    expect(result.imported).toBe(0);
+    expect(result.failed).toBe(1001);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("1001");
+  });
 });

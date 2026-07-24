@@ -2,6 +2,8 @@ import { parse } from "csv-parse/sync";
 import { csvProductRowSchema, type CsvProductRow } from "@/lib/validation/csv";
 import { createProduct } from "@/lib/services/product-service";
 
+export const MAX_CSV_ROWS = 1000;
+
 export type ImportResult = {
   imported: number;
   failed: number;
@@ -40,6 +42,18 @@ export async function importProductsFromCsv(
   csvText: string,
 ): Promise<ImportResult> {
   const { rows, rowErrors } = parseProductCsv(csvText);
+  const totalRows = rows.length + rowErrors.length;
+
+  if (totalRows > MAX_CSV_ROWS) {
+    return {
+      imported: 0,
+      failed: totalRows,
+      errors: [
+        `CSV dosyasında çok fazla satır var (${totalRows}). Maksimum ${MAX_CSV_ROWS} satır içe aktarılabilir.`,
+      ],
+    };
+  }
+
   const errors = [...rowErrors];
   let imported = 0;
 
