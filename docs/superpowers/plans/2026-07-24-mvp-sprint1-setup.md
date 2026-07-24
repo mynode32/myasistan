@@ -1601,7 +1601,8 @@ export function parseProductCsv(csvText: string): {
       rows.push(result.data);
     } else {
       const rowNumber = index + 2; // +1 for header row, +1 for 1-based indexing
-      const message = result.error.errors.map((e) => e.message).join("; ");
+      // Zod 4 (installed in this project) renamed ZodError.errors to .issues.
+      const message = result.error.issues.map((e) => e.message).join("; ");
       rowErrors.push(`Satır ${rowNumber}: ${message}`);
     }
   });
