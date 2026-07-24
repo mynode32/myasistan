@@ -8,15 +8,23 @@ export async function registerStoreWithOwner(
 ): Promise<{ store: Store; user: User }> {
   const passwordHash = await hashPassword(input.password);
 
-  return prisma.$transaction(async (tx) => {
-    const store = await tx.store.create({
-      data: { name: input.storeName },
-    });
-    const user = await tx.user.create({
-      data: { storeId: store.id, email: input.email, passwordHash },
-    });
-    return { store, user };
-  });
+  return prisma.$transaction(
+    async (tx) => {
+      const store = await tx.store.create({
+        data: { name: input.storeName },
+      });
+      const user = await tx.user.create({
+        data: { storeId: store.id, email: input.email, passwordHash },
+      });
+      return { store, user };
+    },
+    // Supabase's pgbouncer pool (transaction mode, port 6543) plus network
+    // latency can exceed Prisma's 2s/5s defaults for acquiring a
+    // transaction-pinned connection, intermittently throwing P2028
+    // ("Unable to start a transaction in the given time"). Raised both
+    // well above observed latency.
+    { maxWait: 10000, timeout: 10000 },
+  );
 }
 
 export async function loginWithCredentials(

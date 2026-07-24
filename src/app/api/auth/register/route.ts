@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@/generated/prisma/client";
 import { registerSchema } from "@/lib/validation/auth";
 import { registerStoreWithOwner } from "@/lib/services/auth-service";
 import { signSessionToken } from "@/lib/auth/jwt";
@@ -26,6 +27,9 @@ export async function POST(request: Request) {
     });
     return response;
   } catch (error) {
-    return NextResponse.json({ error: "Bu e-posta ile bir hesap zaten var." }, { status: 409 });
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return NextResponse.json({ error: "Bu e-posta ile bir hesap zaten var." }, { status: 409 });
+    }
+    return NextResponse.json({ error: "Kayıt oluşturulamadı, lütfen tekrar deneyin." }, { status: 500 });
   }
 }
