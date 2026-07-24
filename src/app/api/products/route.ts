@@ -16,8 +16,15 @@ export async function GET() {
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
   }
-  const products = await listProducts(session.storeId);
-  return NextResponse.json({ products });
+  try {
+    const products = await listProducts(session.storeId);
+    return NextResponse.json({ products });
+  } catch {
+    return NextResponse.json(
+      { error: "Ürünler getirilemedi, lütfen tekrar deneyin." },
+      { status: 500 },
+    );
+  }
 }
 
 export async function POST(request: Request) {
@@ -32,6 +39,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const product = await createProduct(session.storeId, parsed.data);
-  return NextResponse.json({ product }, { status: 201 });
+  try {
+    const product = await createProduct(session.storeId, parsed.data);
+    return NextResponse.json({ product }, { status: 201 });
+  } catch {
+    return NextResponse.json(
+      { error: "Ürün oluşturulamadı, lütfen tekrar deneyin." },
+      { status: 500 },
+    );
+  }
 }

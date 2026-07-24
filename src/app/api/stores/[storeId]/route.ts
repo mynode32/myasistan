@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { Prisma } from "@/generated/prisma/client";
 import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { verifySessionToken } from "@/lib/auth/jwt";
 import { getStoreById, updateStoreSettings } from "@/lib/services/store-service";
@@ -44,6 +45,16 @@ export async function PATCH(request: Request, { params }: RouteParams) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const store = await updateStoreSettings(storeId, parsed.data);
-  return NextResponse.json({ store });
+  try {
+    const store = await updateStoreSettings(storeId, parsed.data);
+    return NextResponse.json({ store });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+      return NextResponse.json({ error: "Mağaza bulunamadı." }, { status: 404 });
+    }
+    return NextResponse.json(
+      { error: "Mağaza güncellenemedi, lütfen tekrar deneyin." },
+      { status: 500 },
+    );
+  }
 }

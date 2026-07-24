@@ -12,7 +12,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const result = await loginWithCredentials(parsed.data.email, parsed.data.password);
+  let result;
+  try {
+    result = await loginWithCredentials(parsed.data.email, parsed.data.password);
+  } catch {
+    return NextResponse.json(
+      { error: "Giriş yapılamadı, lütfen tekrar deneyin." },
+      { status: 500 },
+    );
+  }
+
   if (!result) {
     return NextResponse.json({ error: "E-posta veya şifre hatalı." }, { status: 401 });
   }
