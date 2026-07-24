@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated Prisma client (~8.7k lines, marked @ts-nocheck) - not
+    // meant to be linted, and type-aware lint rules hang against it.
+    "src/generated/**",
   ]),
 ]);
 
