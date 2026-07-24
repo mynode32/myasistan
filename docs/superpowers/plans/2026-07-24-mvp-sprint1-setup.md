@@ -20,6 +20,8 @@
 - Secrets (`DATABASE_URL`, `JWT_SECRET`) live in `.env.local`, never committed; `.env.example` documents required keys.
 - UI copy in Turkish, code identifiers (variables/functions/types) in English, commit messages in English (user preference).
 - Package manager: npm.
+- Installed Next.js version is **16.2.11** (confirmed in Task 1) — newer than a typical model's training data, with breaking changes vs. Next.js 14. `cookies()` from `next/headers` is **async** (`const cookieStore = await cookies()`), and dynamic route `params` in Route Handlers are **`Promise`-wrapped** (`{ params }: { params: Promise<{ id: string }> }`, then `const { id } = await params;`). `NextRequest.cookies` (used in `middleware.ts`) is unaffected and stays synchronous. All code blocks in this plan already reflect this — do not "correct" them back to the Next 14 synchronous style. Before writing any other Next.js-specific code not covered by this plan, check `node_modules/next/dist/docs/` for the current API shape rather than relying on training data.
+- Turbopack (this Next.js version's default bundler) panics on paths containing multi-byte Turkish characters — this project's path has them (`Masaüstü`, `Aİ ASİSTAN YENİ`). `npm run dev` / `npm run build` already force `--webpack` (set in Task 1) — keep using the npm scripts as-is; don't invoke `next dev`/`next build` directly without `--webpack`.
 
 ---
 
@@ -873,7 +875,8 @@ import { SESSION_COOKIE_NAME } from "@/lib/auth/session";
 import { verifySessionToken } from "@/lib/auth/jwt";
 
 export async function GET() {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   if (!token) {
     return NextResponse.json({ session: null }, { status: 200 });
   }
@@ -1063,7 +1066,8 @@ import { getStoreById, updateStoreSettings } from "@/lib/services/store-service"
 import { updateStoreSchema } from "@/lib/validation/store";
 
 async function requireSessionForStore(storeId: string) {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   const session = token ? await verifySessionToken(token) : null;
   if (!session || session.storeId !== storeId) {
     return null;
@@ -1071,21 +1075,25 @@ async function requireSessionForStore(storeId: string) {
   return session;
 }
 
-export async function GET(_request: Request, { params }: { params: { storeId: string } }) {
-  const session = await requireSessionForStore(params.storeId);
+type RouteParams = { params: Promise<{ storeId: string }> };
+
+export async function GET(_request: Request, { params }: RouteParams) {
+  const { storeId } = await params;
+  const session = await requireSessionForStore(storeId);
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
   }
 
-  const store = await getStoreById(params.storeId);
+  const store = await getStoreById(storeId);
   if (!store) {
     return NextResponse.json({ error: "Mağaza bulunamadı." }, { status: 404 });
   }
   return NextResponse.json({ store });
 }
 
-export async function PATCH(request: Request, { params }: { params: { storeId: string } }) {
-  const session = await requireSessionForStore(params.storeId);
+export async function PATCH(request: Request, { params }: RouteParams) {
+  const { storeId } = await params;
+  const session = await requireSessionForStore(storeId);
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
   }
@@ -1096,7 +1104,7 @@ export async function PATCH(request: Request, { params }: { params: { storeId: s
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 });
   }
 
-  const store = await updateStoreSettings(params.storeId, parsed.data);
+  const store = await updateStoreSettings(storeId, parsed.data);
   return NextResponse.json({ store });
 }
 ```
@@ -1355,7 +1363,8 @@ import { createProduct, listProducts } from "@/lib/services/product-service";
 import { createProductSchema } from "@/lib/validation/product";
 
 async function requireSession() {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   return token ? verifySessionToken(token) : null;
 }
 
@@ -1396,23 +1405,28 @@ import { getProductById, updateProduct, deleteProduct } from "@/lib/services/pro
 import { updateProductSchema } from "@/lib/validation/product";
 
 async function requireSession() {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   return token ? verifySessionToken(token) : null;
 }
 
-export async function GET(_request: Request, { params }: { params: { productId: string } }) {
+type RouteParams = { params: Promise<{ productId: string }> };
+
+export async function GET(_request: Request, { params }: RouteParams) {
+  const { productId } = await params;
   const session = await requireSession();
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
   }
-  const product = await getProductById(session.storeId, params.productId);
+  const product = await getProductById(session.storeId, productId);
   if (!product) {
     return NextResponse.json({ error: "Ürün bulunamadı." }, { status: 404 });
   }
   return NextResponse.json({ product });
 }
 
-export async function PATCH(request: Request, { params }: { params: { productId: string } }) {
+export async function PATCH(request: Request, { params }: RouteParams) {
+  const { productId } = await params;
   const session = await requireSession();
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
@@ -1425,21 +1439,22 @@ export async function PATCH(request: Request, { params }: { params: { productId:
   }
 
   try {
-    const product = await updateProduct(session.storeId, params.productId, parsed.data);
+    const product = await updateProduct(session.storeId, productId, parsed.data);
     return NextResponse.json({ product });
   } catch {
     return NextResponse.json({ error: "Ürün bulunamadı." }, { status: 404 });
   }
 }
 
-export async function DELETE(_request: Request, { params }: { params: { productId: string } }) {
+export async function DELETE(_request: Request, { params }: RouteParams) {
+  const { productId } = await params;
   const session = await requireSession();
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
   }
 
   try {
-    await deleteProduct(session.storeId, params.productId);
+    await deleteProduct(session.storeId, productId);
     return NextResponse.json({ ok: true });
   } catch {
     return NextResponse.json({ error: "Ürün bulunamadı." }, { status: 404 });
@@ -1655,7 +1670,8 @@ import { verifySessionToken } from "@/lib/auth/jwt";
 import { importProductsFromCsv } from "@/lib/services/csv-import-service";
 
 export async function POST(request: Request) {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const cookieStore = await cookies();
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
   const session = token ? await verifySessionToken(token) : null;
   if (!session) {
     return NextResponse.json({ error: "Yetkisiz." }, { status: 401 });
