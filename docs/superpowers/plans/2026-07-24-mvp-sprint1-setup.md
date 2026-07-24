@@ -21,6 +21,7 @@
 - UI copy in Turkish, code identifiers (variables/functions/types) in English, commit messages in English (user preference).
 - Package manager: npm.
 - Installed Next.js version is **16.2.11** (confirmed in Task 1) — newer than a typical model's training data, with breaking changes vs. Next.js 14. `cookies()` from `next/headers` is **async** (`const cookieStore = await cookies()`), and dynamic route `params` in Route Handlers are **`Promise`-wrapped** (`{ params }: { params: Promise<{ id: string }> }`, then `const { id } = await params;`). `NextRequest.cookies` (used in `middleware.ts`) is unaffected and stays synchronous. All code blocks in this plan already reflect this — do not "correct" them back to the Next 14 synchronous style. Before writing any other Next.js-specific code not covered by this plan, check `node_modules/next/dist/docs/` for the current API shape rather than relying on training data.
+- Prisma is version 7.9.0. `PrismaClient` and all model types (`Store`, `User`, `Product`, `ProductVariant`) import from `@/generated/prisma`, never `"@prisma/client"` (see Task 2 for why). `PrismaClient` requires a driver `adapter` in its constructor — see Task 3. **Not yet verified:** whether `vitest-mock-extended`'s `mockDeep<PrismaClient>()` (used throughout Tasks 6–9's tests) works cleanly against Prisma 7's generated client shape — this project's Prisma version postdates this plan's authoring. The Task 6 implementer should treat the first `mockDeep<PrismaClient>()` test as a spike: if it doesn't type-check or mock correctly, stop and report NEEDS_CONTEXT rather than improvising a workaround, since the same pattern repeats in Tasks 7–9.
 - Turbopack (this Next.js version's default bundler) panics on paths containing multi-byte Turkish characters — this project's path has them (`Masaüstü`, `Aİ ASİSTAN YENİ`). `npm run dev` / `npm run build` already force `--webpack` (set in Task 1) — keep using the npm scripts as-is; don't invoke `next dev`/`next build` directly without `--webpack`.
 
 ---
@@ -147,52 +148,34 @@ git commit -m "chore: scaffold Next.js project with TypeScript and Tailwind"
 
 ---
 
-### Task 2: Prisma Şema ve Migration
+### Task 2: Prisma Şema ve Migration — DONE (as of commit `8d89e79`)
 
-**Files:**
-- Create: `prisma/schema.prisma`
-- Modify: `.env.example` (add `DIRECT_URL` alongside `DATABASE_URL` — see Step 1)
-- Modify: `package.json` (add `prisma`, `@prisma/client` deps)
+**Status:** already implemented directly by the controller during execution (not dispatched to a subagent). The steps below are kept as the historical record and as the reference for what Task 3 (and any future Prisma work) builds on — do not redo this task.
 
-**Interfaces:**
-- Produces: Prisma models `Store`, `User`, `Product`, `ProductVariant` and generated `@prisma/client` types (`Store`, `User`, `Product`, `ProductVariant`) that every later service imports.
+**Files (as actually created):**
+- `prisma/schema.prisma`, `prisma/migrations/20260724125610_init/`, `prisma.config.ts`
+- `.env.example` updated with `DATABASE_URL` + `DIRECT_URL` (both requiring `sslmode=require`)
+- `package.json`: added `prisma`, `@prisma/client`, `@prisma/adapter-pg`, `pg` (deps), `@types/pg`, `dotenv` (devDeps), and a `postinstall: "prisma generate"` script
 
-Database is Supabase Postgres (decided during execution, not a local instance). Supabase's connection page gives two URLs: a pooled one (port 6543, `pgbouncer=true`) for the app at runtime, and a direct one (port 5432) for running migrations — PgBouncer's transaction-mode pooling does not support the prepared statements Prisma Migrate needs. Both are required.
+**What actually happened (deviates from the plan as originally written — kept here so later tasks aren't confused by stale assumptions):**
 
-- [ ] **Step 1: Install Prisma and set up both connection strings**
+1. **Installed Prisma version is 7.9.0**, not 5/6 as the plan originally assumed. Prisma 7 has two breaking changes that matter for this whole project:
+   - `datasource.url` **cannot** be set inline in `schema.prisma` anymore (hard validation error `P1012`). Connection config now lives in a separate `prisma.config.ts` file, and `PrismaClient` **requires** a driver `adapter` passed to its constructor — see Task 3.
+   - The default generator is `provider = "prisma-client"` (not `"prisma-client-js"`), and it generates into a custom path (`src/generated/prisma` here) instead of `node_modules/@prisma/client`. **Every import of Prisma types/classes in this plan must come from `@/generated/prisma` (the tsconfig `@/*` → `src/*` alias), not from `"@prisma/client"`.** This affects Task 3, and every test file in Tasks 6–9 that imports `PrismaClient`, `Store`, `User`, `Product`, or `ProductVariant` types.
+2. **Database is Supabase Postgres**, decided during execution (not local Postgres, not a schema-inline URL). Supabase's Connect → ORMs → Prisma panel gives two connection strings: a pooled one (port 6543, `pgbouncer=true`) for the app at runtime, and a "session pooler" one (port 5432) for migrations — PgBouncer's transaction-mode pooling doesn't support the prepared statements Prisma Migrate needs. **Both need `?sslmode=require` appended** — without it, Prisma reports a generic `P1001: Can't reach database server`, even though the host is reachable (confirmed by testing the exact same connection string with a raw `pg` client, which worked fine either way — `sslmode` is something only Prisma's schema engine requires explicitly).
+3. Since `prisma.config.ts` runs outside Next.js (no automatic `.env.local` loading), it loads env vars itself via `dotenv`, pointed explicitly at `.env.local` — and passes `{ quiet: true }`, because `dotenv` 17.x prints a random one-line promotional "tip" banner on every load otherwise (harmless — verified against `dotenv`'s own bundled source, not a compromised package — but noisy and worth suppressing).
+4. `prisma.config.ts`'s `datasource.url` is set to `DIRECT_URL` (used by the CLI for `migrate`/`studio`/`db pull`), not `DATABASE_URL` — the pooled URL is only consumed by the app's own `PrismaClient` construction in Task 3, not by the CLI.
 
-```bash
-npm install prisma @prisma/client
-npx prisma init --datasource-provider postgresql
-```
-
-This creates `prisma/schema.prisma` and a `.env` — delete the generated `.env` (we use `.env.local`, not `.env`, per Next.js convention).
-
-Update `.env.example` to document both URLs (replace the single `DATABASE_URL` line from Task 1):
-
-```bash
-# Pooled connection (pgbouncer, port 6543) — used by the app at runtime.
-DATABASE_URL="postgresql://postgres.[project-ref]:[YOUR-PASSWORD]@[pooler-host]:6543/postgres?pgbouncer=true"
-# Direct connection (port 5432) — used only for running migrations.
-DIRECT_URL="postgresql://postgres.[project-ref]:[YOUR-PASSWORD]@[pooler-host]:5432/postgres"
-JWT_SECRET="replace-with-a-long-random-string"
-```
-
-In `.env.local`, set both to the real values from the Supabase dashboard (Connect → ORMs → Prisma), with the real database password substituted for `[YOUR-PASSWORD]`.
-
-- [ ] **Step 2: Write the schema**
-
-Replace the contents of `prisma/schema.prisma`. Note the `directUrl` line — this is what makes `prisma migrate` use the non-pooled connection while the generated client still uses the pooled one:
+**Final `prisma/schema.prisma`:**
 
 ```prisma
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
 }
 
 enum StoreStatus {
@@ -280,27 +263,7 @@ model ProductVariant {
 }
 ```
 
-- [ ] **Step 3: Run the first migration**
-
-Ensure `DATABASE_URL` and `DIRECT_URL` in `.env.local` both point at the real Supabase instance (see Step 1), then run:
-
-```bash
-npx prisma migrate dev --name init
-```
-
-Expected: migration applies, prints "Your database is now in sync with your schema", and `@prisma/client` is generated.
-
-- [ ] **Step 4: Validate the schema**
-
-Run: `npx prisma validate`
-Expected: `The schema at prisma/schema.prisma is valid 🚀`
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add prisma package.json package-lock.json
-git commit -m "feat: add Prisma schema for stores, users, products, variants"
-```
+Migration `20260724125610_init` was applied against `DIRECT_URL` (`npx prisma migrate dev --name init`, after adding `sslmode=require` — see point 2 above) and the client was generated to `src/generated/prisma` (`npx prisma generate`). Schema validated clean (`npx prisma validate` → `The schema at prisma\schema.prisma is valid 🚀`). Committed as `8d89e79`.
 
 ---
 
@@ -313,18 +276,23 @@ git commit -m "feat: add Prisma schema for stores, users, products, variants"
 **Interfaces:**
 - Produces: `prisma: PrismaClient` — the single import every service and API route uses for DB access.
 
+Per Task 2's findings: Prisma 7 requires a driver `adapter` (no inline schema `url`), and the `PrismaClient` type/class comes from the generated path (`@/generated/prisma`), not `"@prisma/client"`. The adapter uses `pg` under the hood via `@prisma/adapter-pg` (already installed in Task 2) and connects with the **pooled** `DATABASE_URL` — the app talks to Supabase through PgBouncer at runtime; only the Prisma CLI (migrations) needs the direct URL, and that's already wired up in `prisma.config.ts`.
+
 - [ ] **Step 1: Write the singleton**
 
 Create `src/lib/db/prisma.ts`:
 
 ```typescript
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@/generated/prisma";
+import { PrismaPg } from "@prisma/adapter-pg";
 
 const globalForPrisma = globalThis as unknown as {
   prisma: PrismaClient | undefined;
 };
 
-export const prisma = globalForPrisma.prisma ?? new PrismaClient();
+const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
+
+export const prisma = globalForPrisma.prisma ?? new PrismaClient({ adapter });
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
@@ -350,7 +318,7 @@ main().catch((error) => {
 });
 ```
 
-Run: `npx tsx scripts/check-db.ts` (install tsx first if missing: `npm install -D tsx`)
+Run: `npx tsx scripts/check-db.ts` (install tsx first if missing: `npm install -D tsx`). This script loads env vars the same way `next dev`/`next build` do (Next.js auto-loads `.env.local`) — but a bare `tsx` invocation does **not** get Next's auto-loading, so if it fails with "DATABASE_URL is not defined", run it via `npx tsx -r dotenv/config scripts/check-db.ts dotenv_config_path=.env.local` instead.
 Expected: `DB connection OK: [ { ok: 1 } ]`
 
 Delete `scripts/check-db.ts` after confirming (it was only a manual smoke check, not part of the app).
@@ -359,7 +327,7 @@ Delete `scripts/check-db.ts` after confirming (it was only a manual smoke check,
 
 ```bash
 git add src/lib/db/prisma.ts package.json package-lock.json
-git commit -m "feat: add Prisma client singleton"
+git commit -m "feat: add Prisma client singleton with pg driver adapter"
 ```
 
 ---
@@ -646,7 +614,7 @@ Create `tests/lib/services/auth-service.test.ts`:
 ```typescript
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockDeep, mockReset, DeepMockProxy } from "vitest-mock-extended";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@/generated/prisma";
 import { prisma } from "@/lib/db/prisma";
 import { registerStoreWithOwner, loginWithCredentials } from "@/lib/services/auth-service";
 import { hashPassword } from "@/lib/auth/password";
@@ -741,7 +709,7 @@ Expected: FAIL — `Cannot find module '@/lib/services/auth-service'`
 Create `src/lib/services/auth-service.ts`:
 
 ```typescript
-import type { Store, User } from "@prisma/client";
+import type { Store, User } from "@/generated/prisma";
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import type { RegisterInput } from "@/lib/validation/auth";
@@ -989,7 +957,7 @@ Create `tests/lib/services/store-service.test.ts`:
 ```typescript
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockDeep, mockReset, DeepMockProxy } from "vitest-mock-extended";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@/generated/prisma";
 import { prisma } from "@/lib/db/prisma";
 import { getStoreById, updateStoreSettings } from "@/lib/services/store-service";
 
@@ -1047,7 +1015,7 @@ Expected: FAIL — `Cannot find module '@/lib/services/store-service'`
 Create `src/lib/services/store-service.ts`:
 
 ```typescript
-import type { Store } from "@prisma/client";
+import type { Store } from "@/generated/prisma";
 import { prisma } from "@/lib/db/prisma";
 import type { UpdateStoreInput } from "@/lib/validation/store";
 
@@ -1187,7 +1155,7 @@ Create `tests/lib/services/product-service.test.ts`:
 ```typescript
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockDeep, mockReset, DeepMockProxy } from "vitest-mock-extended";
-import type { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@/generated/prisma";
 import { prisma } from "@/lib/db/prisma";
 import {
   createProduct,
@@ -1284,7 +1252,7 @@ Expected: FAIL — `Cannot find module '@/lib/services/product-service'`
 Create `src/lib/services/product-service.ts`:
 
 ```typescript
-import type { Product, ProductVariant } from "@prisma/client";
+import type { Product, ProductVariant } from "@/generated/prisma";
 import { prisma } from "@/lib/db/prisma";
 import type { CreateProductInput, UpdateProductInput } from "@/lib/validation/product";
 
