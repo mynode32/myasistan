@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- concise partial Prisma fixtures */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mockDeep, mockReset, DeepMockProxy } from "vitest-mock-extended";
 import type { PrismaClient } from "@/generated/prisma/client";

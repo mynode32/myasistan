@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any -- concise partial service results */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { parseProductCsv, importProductsFromCsv } from "@/lib/services/csv-import-service";
 import * as productService from "@/lib/services/product-service";
