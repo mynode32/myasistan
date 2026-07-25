@@ -1,5 +1,6 @@
 import type { Product, ProductVariant } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { deleteProductChunks, syncProductChunks } from "@/lib/services/knowledge-service";
 import type { CreateProductInput, UpdateProductInput } from "@/lib/validation/product";
 
 export type ProductWithVariants = Product & { variants: ProductVariant[] };
@@ -8,7 +9,7 @@ export async function createProduct(
   storeId: string,
   input: CreateProductInput,
 ): Promise<ProductWithVariants> {
-  return prisma.product.create({
+  const product = await prisma.product.create({
     data: {
       storeId,
       title: input.title,
@@ -21,6 +22,14 @@ export async function createProduct(
     },
     include: { variants: true },
   });
+
+  try {
+    await syncProductChunks(storeId, product);
+  } catch (error) {
+    console.error("Product knowledge sync failed after create", error);
+  }
+
+  return product;
 }
 
 export async function listProducts(storeId: string): Promise<ProductWithVariants[]> {
@@ -51,7 +60,7 @@ export async function updateProduct(
     throw new Error("Ürün bulunamadı.");
   }
 
-  return prisma.product.update({
+  const product = await prisma.product.update({
     where: { id: productId },
     data: {
       title: input.title,
@@ -63,6 +72,14 @@ export async function updateProduct(
     },
     include: { variants: true },
   });
+
+  try {
+    await syncProductChunks(storeId, product);
+  } catch (error) {
+    console.error("Product knowledge sync failed after update", error);
+  }
+
+  return product;
 }
 
 export async function deleteProduct(storeId: string, productId: string): Promise<void> {
@@ -71,4 +88,9 @@ export async function deleteProduct(storeId: string, productId: string): Promise
     throw new Error("Ürün bulunamadı.");
   }
   await prisma.product.delete({ where: { id: productId } });
+  try {
+    await deleteProductChunks(storeId, productId);
+  } catch (error) {
+    console.error("Product knowledge sync failed after delete", error);
+  }
 }

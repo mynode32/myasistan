@@ -6,8 +6,9 @@
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint",
+    "lint": "eslint src tests *.ts *.mjs",
     "test": "vitest run",
+    "test:e2e:real": "tsx tests/e2e/real-rag-smoke.ts",
     "test:watch": "vitest",
     "postinstall": "prisma generate"
   },
@@ -18,6 +19,7 @@
     "csv-parse": "^7.0.1",
     "jose": "^6.2.4",
     "next": "16.2.11",
+    "openai": "^6.49.0",
     "pg": "^8.22.0",
     "prisma": "^7.9.0",
     "react": "19.2.4",

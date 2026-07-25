@@ -1,28 +1,58 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mockDeep, mockReset, DeepMockProxy } from "vitest-mock-extended";
+import { mockDeep, mockReset, type DeepMockProxy } from "vitest-mock-extended";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { deleteProductChunks, syncProductChunks } from "@/lib/services/knowledge-service";
+import type { ProductWithVariants } from "@/lib/services/product-service";
 import {
   createProduct,
-  listProducts,
-  getProductById,
-  updateProduct,
   deleteProduct,
+  getProductById,
+  listProducts,
+  updateProduct,
 } from "@/lib/services/product-service";
 
 vi.mock("@/lib/db/prisma", () => ({
   prisma: mockDeep<PrismaClient>(),
 }));
 
+vi.mock("@/lib/services/knowledge-service", () => ({
+  syncProductChunks: vi.fn(),
+  deleteProductChunks: vi.fn(),
+}));
+
 const prismaMock = prisma as unknown as DeepMockProxy<PrismaClient>;
+const syncProductChunksMock = vi.mocked(syncProductChunks);
+const deleteProductChunksMock = vi.mocked(deleteProductChunks);
+
+function fakeProductWithVariants(overrides: Partial<ProductWithVariants> = {}): ProductWithVariants {
+  return {
+    id: "product_1",
+    storeId: "store_1",
+    externalId: null,
+    title: "Koltuk",
+    description: null,
+    categoryId: null,
+    brand: null,
+    url: null,
+    imageUrl: null,
+    status: "ACTIVE",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    variants: [],
+    ...overrides,
+  };
+}
 
 beforeEach(() => {
   mockReset(prismaMock);
+  syncProductChunksMock.mockReset();
+  deleteProductChunksMock.mockReset();
 });
 
 describe("createProduct", () => {
-  it("creates a product scoped to storeId with nested variants", async () => {
-    const fakeProduct = { id: "product_1", storeId: "store_1", title: "Koltuk", variants: [] } as any;
+  it("creates a product scoped to storeId with nested variants and syncs knowledge", async () => {
+    const fakeProduct = fakeProductWithVariants();
     prismaMock.product.create.mockResolvedValue(fakeProduct);
 
     const result = await createProduct("store_1", {
@@ -40,6 +70,23 @@ describe("createProduct", () => {
         }),
       }),
     );
+    expect(syncProductChunksMock).toHaveBeenCalledWith("store_1", fakeProduct);
+  });
+
+  it("does not fail product creation when knowledge sync fails", async () => {
+    const fakeProduct = fakeProductWithVariants();
+    prismaMock.product.create.mockResolvedValue(fakeProduct);
+    syncProductChunksMock.mockRejectedValue(new Error("OpenAI unavailable"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      createProduct("store_1", {
+        title: "Koltuk",
+        variants: [{ price: 1999.99, stockQuantity: 5 }],
+      }),
+    ).resolves.toEqual(fakeProduct);
+
+    consoleError.mockRestore();
   });
 });
 
@@ -76,6 +123,16 @@ describe("updateProduct", () => {
       "Ürün bulunamadı.",
     );
   });
+
+  it("syncs product chunks after a successful update", async () => {
+    const fakeProduct = fakeProductWithVariants({ title: "Yeni" });
+    prismaMock.product.findFirst.mockResolvedValue(fakeProduct);
+    prismaMock.product.update.mockResolvedValue(fakeProduct);
+
+    await updateProduct("store_1", "product_1", { title: "Yeni" });
+
+    expect(syncProductChunksMock).toHaveBeenCalledWith("store_1", fakeProduct);
+  });
 });
 
 describe("deleteProduct", () => {
@@ -83,5 +140,14 @@ describe("deleteProduct", () => {
     prismaMock.product.findFirst.mockResolvedValue(null);
 
     await expect(deleteProduct("store_1", "missing")).rejects.toThrow("Ürün bulunamadı.");
+  });
+
+  it("deletes product chunks after a successful delete", async () => {
+    prismaMock.product.findFirst.mockResolvedValue(fakeProductWithVariants());
+    prismaMock.product.delete.mockResolvedValue(fakeProductWithVariants());
+
+    await deleteProduct("store_1", "product_1");
+
+    expect(deleteProductChunksMock).toHaveBeenCalledWith("store_1", "product_1");
   });
 });
