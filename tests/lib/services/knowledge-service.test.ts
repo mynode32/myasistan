@@ -24,6 +24,11 @@ beforeEach(() => {
   mockReset(prismaMock);
   generateEmbeddingMock.mockReset();
   generateEmbeddingMock.mockResolvedValue(Array(1536).fill(0.1));
+  // Interactive transactions run the callback against the same mock client,
+  // so assertions against prismaMock also cover calls made through `tx`.
+  prismaMock.$transaction.mockImplementation((fn) =>
+    (fn as (tx: typeof prismaMock) => Promise<unknown>)(prismaMock),
+  );
 });
 
 describe("createKnowledgeDocument", () => {
@@ -72,6 +77,23 @@ describe("createKnowledgeDocument", () => {
       expect.stringMatching(/^\[/),
     );
   });
+
+  it("does not create the document when embedding a chunk fails", async () => {
+    generateEmbeddingMock.mockRejectedValueOnce(new Error("OpenAI down"));
+
+    await expect(
+      createKnowledgeDocument("store_1", {
+        sourceType: "FAQ",
+        title: "İade",
+        content: "İade süresi 14 gündür.",
+        language: "tr",
+      }),
+    ).rejects.toThrow("OpenAI down");
+
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
+    expect(prismaMock.knowledgeDocument.create).not.toHaveBeenCalled();
+    expect(prismaMock.$executeRawUnsafe).not.toHaveBeenCalled();
+  });
 });
 
 describe("updateKnowledgeDocument", () => {
@@ -81,6 +103,27 @@ describe("updateKnowledgeDocument", () => {
     await expect(updateKnowledgeDocument("store_1", "doc_1", { title: "Yeni" })).rejects.toThrow(
       "Bilgi dokümanı bulunamadı.",
     );
+    expect(prismaMock.knowledgeDocument.update).not.toHaveBeenCalled();
+  });
+
+  it("does not update the document when embedding a chunk fails", async () => {
+    prismaMock.knowledgeDocument.findFirst.mockResolvedValue({
+      id: "doc_1",
+      storeId: "store_1",
+      sourceType: "FAQ",
+      title: "Eski",
+      content: "Eski içerik",
+      language: "tr",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as KnowledgeDocument);
+    generateEmbeddingMock.mockRejectedValueOnce(new Error("OpenAI down"));
+
+    await expect(
+      updateKnowledgeDocument("store_1", "doc_1", { content: "Yeni içerik" }),
+    ).rejects.toThrow("OpenAI down");
+
+    expect(prismaMock.$transaction).not.toHaveBeenCalled();
     expect(prismaMock.knowledgeDocument.update).not.toHaveBeenCalled();
   });
 });

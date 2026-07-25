@@ -1,6 +1,7 @@
 import type {
   KnowledgeDocument,
   KnowledgeSourceType,
+  Prisma,
   Product,
   ProductVariant,
 } from "@/generated/prisma/client";
@@ -16,28 +17,43 @@ export type ProductWithVariants = Product & { variants: ProductVariant[] };
 
 const PRODUCT_SOURCE_TYPE = "PRODUCT" satisfies KnowledgeSourceType;
 
+type EmbeddedChunk = { content: string; embedding: number[] };
+
 function vectorLiteral(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
 
-async function replaceChunks(input: {
-  storeId: string;
-  sourceType: KnowledgeSourceType;
-  sourceId: string;
-  productId?: string | null;
-  categoryId?: string | null;
-  language?: string;
-  chunks: string[];
-}) {
-  await prisma.$executeRawUnsafe(
+// Embeds every chunk before any database write happens, so a failed OpenAI
+// call (e.g. on chunk 2 of 3) never leaves a document or product with old
+// chunks deleted but new ones only partially written.
+async function embedChunks(chunks: string[]): Promise<EmbeddedChunk[]> {
+  const embedded: EmbeddedChunk[] = [];
+  for (const content of chunks) {
+    embedded.push({ content, embedding: await generateEmbedding(content) });
+  }
+  return embedded;
+}
+
+async function writeChunks(
+  tx: Prisma.TransactionClient,
+  input: {
+    storeId: string;
+    sourceType: KnowledgeSourceType;
+    sourceId: string;
+    productId?: string | null;
+    categoryId?: string | null;
+    language?: string;
+    embeddedChunks: EmbeddedChunk[];
+  },
+) {
+  await tx.$executeRawUnsafe(
     'DELETE FROM "knowledge_chunks" WHERE "storeId" = $1 AND "sourceId" = $2',
     input.storeId,
     input.sourceId,
   );
 
-  for (const [chunkIndex, content] of input.chunks.entries()) {
-    const embedding = await generateEmbedding(content);
-    await prisma.$executeRawUnsafe(
+  for (const [chunkIndex, { content, embedding }] of input.embeddedChunks.entries()) {
+    await tx.$executeRawUnsafe(
       `INSERT INTO "knowledge_chunks"
         ("id", "storeId", "sourceType", "sourceId", "productId", "categoryId", "language", "chunkIndex", "content", "embedding")
        VALUES
@@ -59,25 +75,29 @@ export async function createKnowledgeDocument(
   storeId: string,
   input: CreateKnowledgeDocumentInput,
 ): Promise<KnowledgeDocument> {
-  const document = await prisma.knowledgeDocument.create({
-    data: {
+  const embeddedChunks = await embedChunks(chunkText(`${input.title}\n\n${input.content}`));
+
+  return prisma.$transaction(async (tx) => {
+    const document = await tx.knowledgeDocument.create({
+      data: {
+        storeId,
+        sourceType: input.sourceType,
+        title: input.title,
+        content: input.content,
+        language: input.language,
+      },
+    });
+
+    await writeChunks(tx, {
       storeId,
-      sourceType: input.sourceType,
-      title: input.title,
-      content: input.content,
-      language: input.language,
-    },
-  });
+      sourceType: document.sourceType,
+      sourceId: document.id,
+      language: document.language,
+      embeddedChunks,
+    });
 
-  await replaceChunks({
-    storeId,
-    sourceType: document.sourceType,
-    sourceId: document.id,
-    language: document.language,
-    chunks: chunkText(`${document.title}\n\n${document.content}`),
+    return document;
   });
-
-  return document;
 }
 
 export async function listKnowledgeDocuments(storeId: string): Promise<KnowledgeDocument[]> {
@@ -106,20 +126,26 @@ export async function updateKnowledgeDocument(
     throw new Error("Bilgi dokümanı bulunamadı.");
   }
 
-  const document = await prisma.knowledgeDocument.update({
-    where: { id },
-    data: input,
-  });
+  const nextTitle = input.title ?? existing.title;
+  const nextContent = input.content ?? existing.content;
+  const embeddedChunks = await embedChunks(chunkText(`${nextTitle}\n\n${nextContent}`));
 
-  await replaceChunks({
-    storeId,
-    sourceType: document.sourceType,
-    sourceId: document.id,
-    language: document.language,
-    chunks: chunkText(`${document.title}\n\n${document.content}`),
-  });
+  return prisma.$transaction(async (tx) => {
+    const document = await tx.knowledgeDocument.update({
+      where: { id },
+      data: input,
+    });
 
-  return document;
+    await writeChunks(tx, {
+      storeId,
+      sourceType: document.sourceType,
+      sourceId: document.id,
+      language: document.language,
+      embeddedChunks,
+    });
+
+    return document;
+  });
 }
 
 export async function deleteKnowledgeDocument(storeId: string, id: string): Promise<void> {
@@ -128,12 +154,14 @@ export async function deleteKnowledgeDocument(storeId: string, id: string): Prom
     throw new Error("Bilgi dokümanı bulunamadı.");
   }
 
-  await prisma.$executeRawUnsafe(
-    'DELETE FROM "knowledge_chunks" WHERE "storeId" = $1 AND "sourceId" = $2',
-    storeId,
-    id,
-  );
-  await prisma.knowledgeDocument.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRawUnsafe(
+      'DELETE FROM "knowledge_chunks" WHERE "storeId" = $1 AND "sourceId" = $2',
+      storeId,
+      id,
+    );
+    await tx.knowledgeDocument.delete({ where: { id } });
+  });
 }
 
 function productToKnowledgeText(product: ProductWithVariants): string {
@@ -163,14 +191,18 @@ export async function syncProductChunks(
   storeId: string,
   product: ProductWithVariants,
 ): Promise<void> {
-  await replaceChunks({
-    storeId,
-    sourceType: PRODUCT_SOURCE_TYPE,
-    sourceId: product.id,
-    productId: product.id,
-    categoryId: product.categoryId,
-    language: "tr",
-    chunks: [productToKnowledgeText(product)],
+  const embeddedChunks = await embedChunks([productToKnowledgeText(product)]);
+
+  await prisma.$transaction(async (tx) => {
+    await writeChunks(tx, {
+      storeId,
+      sourceType: PRODUCT_SOURCE_TYPE,
+      sourceId: product.id,
+      productId: product.id,
+      categoryId: product.categoryId,
+      language: "tr",
+      embeddedChunks,
+    });
   });
 }
 
